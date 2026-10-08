@@ -3,6 +3,17 @@ import type { ApiError, HealthStatus, MeetingAnalysis, QuestionResponse } from "
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const LONG_REQUEST_MS = 10 * 60 * 1000;
 
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly category: "timeout" | "network" | "http",
+    readonly statusCode?: number,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 function isHealthStatus(data: unknown): data is HealthStatus {
   if (typeof data !== "object" || data === null) return false;
   return (
@@ -26,15 +37,30 @@ function isHealthStatus(data: unknown): data is HealthStatus {
   );
 }
 
-async function responseError(response: Response): Promise<Error> {
-  let message = `The backend request failed (${response.status}).`;
+function safeBackendMessage(detail: unknown): string | null {
+  if (
+    typeof detail !== "string" ||
+    detail.length > 300 ||
+    /[\r\n]/.test(detail) ||
+    /traceback|stack trace|file ".*", line \d+|exception:/i.test(detail)
+  ) {
+    return null;
+  }
+  return detail;
+}
+
+async function responseError(response: Response): Promise<ApiRequestError> {
+  let message =
+    response.status === 503
+      ? "The AI model is not available in the current environment."
+      : `The backend request failed (${response.status}).`;
   try {
     const data = (await response.json()) as ApiError;
-    if (data.detail) message = data.detail;
+    message = safeBackendMessage(data.detail) ?? message;
   } catch {
     // Keep the status-based message when the server did not return JSON.
   }
-  return new Error(message);
+  return new ApiRequestError(message, "http", response.status);
 }
 
 async function fetchWithTimeout(path: string, init?: RequestInit): Promise<Response> {
@@ -46,9 +72,9 @@ async function fetchWithTimeout(path: string, init?: RequestInit): Promise<Respo
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
-      throw new Error("This analysis is taking longer than expected. Check the backend and try again.");
+      throw new ApiRequestError("The request exceeded its time limit.", "timeout");
     }
-    throw new Error("The MeetingMind backend is unavailable. Start the API and retry.");
+    throw new ApiRequestError("The MeetingMind backend could not be reached.", "network");
   }
   if (!response.ok) throw await responseError(response);
   return response;

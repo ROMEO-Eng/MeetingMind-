@@ -159,6 +159,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .status-box { min-height: 39px; display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; border: 1px solid rgba(197, 206, 233, .08); border-radius: 9px; padding: 10px; background: rgba(255, 255, 255, .02); color: #999fad; font-size: 9px; line-height: 1.55; }
 .status-box svg { flex: 0 0 auto; margin-top: 1px; }
 .status-box .status-dot { flex: 0 0 auto; width: 6px; height: 6px; margin: 4px 1px 0; background: #a49aff; box-shadow: 0 0 9px rgba(166, 154, 255, .55); }
+.status-progress { border-color: rgba(166, 154, 255, .2); color: #c5c0ef; }
+.status-progress svg { color: #b0a6ff; }
+.status-box small { display: block; margin-top: 3px; color: #9ca3b1; font-size: 9px; }
 .status-success { border-color: rgba(131, 221, 178, .14); color: #a8d9bf; }
 .status-success svg { color: var(--green); }
 .status-error { border-color: rgba(255, 146, 154, .19); color: #ffadb2; }

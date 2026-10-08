@@ -25,12 +25,22 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import type { ReactNode } from "react";
 import Brand from "@/components/brand";
 import RuntimeStatus from "@/components/runtime-status";
-import { analyseMeeting, askMeeting, downloadNotes, fetchSample } from "@/lib/api";
+import { analyseMeeting, ApiRequestError, askMeeting, downloadNotes, fetchSample } from "@/lib/api";
 import type { MeetingAnalysis, MeetingSource, Priority, QuestionResponse } from "@/lib/types";
 
 type InputTab = "youtube" | "text" | "upload";
 type ResultTab = "overview" | "decisions" | "tasks" | "ask";
-type AnalysisPhase = "idle" | "loading" | "success" | "error";
+type AnalysisPhase =
+  | "idle"
+  | "submitting"
+  | "analysing"
+  | "success"
+  | "timeout"
+  | "network_error"
+  | "backend_error"
+  | "model_unavailable"
+  | "sample_loading"
+  | "sample_error";
 
 interface ChatMessage {
   id: string;
@@ -39,13 +49,6 @@ interface ChatMessage {
   found?: boolean;
   sources?: MeetingSource[];
 }
-
-const phaseMessages = [
-  "Preparing the transcript…",
-  "Extracting meeting facts with the local model…",
-  "Checking structured output and source links…",
-  "Building the source-grounded meeting brief…",
-];
 
 const prompts = [
   "What did the team decide?",
@@ -96,7 +99,7 @@ export default function Workspace() {
   const [asking, setAsking] = useState(false);
   const [downloading, setDownloading] = useState<"csv" | "markdown" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const loadingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isBusy = phase === "submitting" || phase === "analysing" || phase === "sample_loading";
 
   const applyAnalysis = useCallback((result: MeetingAnalysis, message: string) => {
     setAnalysis(result);
@@ -108,14 +111,14 @@ export default function Workspace() {
   }, []);
 
   const loadSample = useCallback(async () => {
-    setPhase("loading");
+    setPhase("sample_loading");
     setError("");
     setStatus("Loading a ready-to-explore sample…");
     try {
       const result = await fetchSample();
       applyAnalysis(result, "Sample loaded · No model weights needed to preview the dashboard.");
     } catch (requestError) {
-      setPhase("error");
+      setPhase("sample_error");
       const message = requestError instanceof Error ? requestError.message : "Could not load the sample.";
       setError(message);
       setStatus("The sample could not be loaded.");
@@ -129,26 +132,21 @@ export default function Workspace() {
       : null;
     return () => {
       if (sampleTimer !== null) window.clearTimeout(sampleTimer);
-      if (loadingTimer.current) clearInterval(loadingTimer.current);
     };
   }, [loadSample]);
 
   async function onAnalyse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
-    setPhase("loading");
-    setStatus(phaseMessages[0]);
-    let messageIndex = 0;
-    loadingTimer.current = setInterval(() => {
-      messageIndex = Math.min(messageIndex + 1, phaseMessages.length - 1);
-      setStatus(phaseMessages[messageIndex]);
-    }, 7000);
+    setPhase("submitting");
+    setStatus("");
     try {
       const form = new FormData();
       form.set("source_type", inputTab);
       if (inputTab === "youtube") form.set("youtube_url", youtubeUrl);
       if (inputTab === "text") form.set("transcript", transcript);
       if (inputTab === "upload" && file) form.set("file", file);
+      setPhase("analysing");
       const result = await analyseMeeting(form);
       applyAnalysis(
         result,
@@ -157,13 +155,27 @@ export default function Workspace() {
           : `Analysis complete · ${result.word_count.toLocaleString()} words · ${result.chunk_count} source segments.`,
       );
     } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : "Meeting analysis failed. Please try again.";
-      setPhase("error");
-      setStatus("Analysis needs attention.");
-      setError(message);
-    } finally {
-      if (loadingTimer.current) clearInterval(loadingTimer.current);
-      loadingTimer.current = null;
+      if (requestError instanceof ApiRequestError && requestError.category === "timeout") {
+        setPhase("timeout");
+        setStatus("Analysis is taking longer than expected.");
+        setError("The AI model may still be initializing or processing the meeting. Check the backend status before retrying.");
+      } else if (requestError instanceof ApiRequestError && requestError.category === "network") {
+        setPhase("network_error");
+        setStatus("Unable to reach the AI backend.");
+        setError("Check that the backend is running and reachable, then retry.");
+      } else if (requestError instanceof ApiRequestError && requestError.statusCode === 503) {
+        setPhase("model_unavailable");
+        setStatus("AI model unavailable");
+        setError(requestError.message || "The AI model is not available in the current environment.");
+      } else {
+        setPhase("backend_error");
+        setStatus("Analysis could not be completed.");
+        setError(
+          requestError instanceof ApiRequestError
+            ? requestError.message
+            : "The backend returned an unexpected error. Check the backend status before retrying.",
+        );
+      }
     }
   }
 
@@ -256,16 +268,22 @@ export default function Workspace() {
                 <p className="field-hint">PDF files must contain selectable text.</p>
               </div>
             )}
-            <button className="button button-primary button-full analyse-button" type="submit" disabled={phase === "loading"}>
-              {phase === "loading" ? <><LoaderCircle className="spin" size={17} /> Analysing meeting</> : <>Analyse meeting <ArrowRight size={16} /></>}
+            <button className="button button-primary button-full analyse-button" type="submit" disabled={isBusy}>
+              {isBusy ? <><LoaderCircle className="spin" size={17} /> {phase === "submitting" ? "Submitting transcript" : phase === "sample_loading" ? "Loading sample" : "Analysing meeting..."}</> : <>Analyse meeting <ArrowRight size={16} /></>}
             </button>
           </form>
-          <button className="sample-button" type="button" onClick={() => void loadSample()} disabled={phase === "loading"}><Play size={14} /> Load sample meeting</button>
-          <div className={`status-box ${phase === "error" ? "status-error" : phase === "success" ? "status-success" : ""}`} role="status" aria-live="polite">
-            {phase === "error" ? <CircleAlert size={15} /> : phase === "success" ? <Check size={15} /> : <span className="status-dot" />}
-            <span>{status}</span>
+          <button className="sample-button" type="button" onClick={() => void loadSample()} disabled={isBusy}><Play size={14} /> Load sample meeting</button>
+          <div className={`status-box ${phase === "success" ? "status-success" : ["timeout", "network_error", "backend_error", "model_unavailable", "sample_error"].includes(phase) ? "status-error" : isBusy ? "status-progress" : ""}`} role="status" aria-live="polite">
+            {phase === "success" ? <Check size={15} /> : ["timeout", "network_error", "backend_error", "model_unavailable", "sample_error"].includes(phase) ? <CircleAlert size={15} /> : isBusy ? <LoaderCircle className="spin" size={15} /> : <span className="status-dot" />}
+            <span>
+              {phase === "submitting"
+                ? "Submitting transcript…"
+                : phase === "analysing"
+                  ? <><strong>Analysing meeting...</strong><small>The AI model may take a moment to initialize on first use.</small></>
+                  : status}
+            </span>
           </div>
-          {error && <div className="error-notice" role="alert"><CircleAlert size={15} />{error}</div>}
+          {error && <div className="error-notice" role="alert"><CircleAlert size={15} /><span>{error}</span></div>}
           <div className="privacy-callout"><Target size={15} /><span><b>Grounded by design.</b> Missing owners and dates stay unstated.</span></div>
         </aside>
 
@@ -277,10 +295,9 @@ export default function Workspace() {
           {!analysis ? (
             <div className="empty-results">
               <div className="empty-art"><AudioLines size={29} /><span /><span /><span /></div>
-              <h3>{phase === "loading" ? "Working through the conversation" : "A clearer meeting record starts here"}</h3>
-              <p>{phase === "loading" ? status : "Add a YouTube link, paste a transcript, or upload a file to see decisions, actions, and source-grounded answers."}</p>
-              {phase === "loading" && <div className="progress-track"><span /></div>}
-              {phase !== "loading" && <button className="text-link" type="button" onClick={() => void loadSample()}>Explore the sample <ArrowRight size={14} /></button>}
+              <h3>{isBusy ? phase === "sample_loading" ? "Preparing the sample" : "Analysing meeting..." : "A clearer meeting record starts here"}</h3>
+              <p>{isBusy ? phase === "sample_loading" ? status : "The AI model may take a moment to initialize on first use." : "Add a YouTube link, paste a transcript, or upload a file to see decisions, actions, and source-grounded answers."}</p>
+              {!isBusy && <button className="text-link" type="button" onClick={() => void loadSample()}>Explore the sample <ArrowRight size={14} /></button>}
             </div>
           ) : (
             <>
