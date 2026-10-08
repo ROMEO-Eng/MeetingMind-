@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Models, indexes, and local meeting data
+models/
+model-cache/
+cache/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.faiss
+*.index
+data/*
+!data/.gitkeep
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+out/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build outputs and temporary files
+build/
+tmp/
+temp/
+*.log
+*.tmp
+*.swp
