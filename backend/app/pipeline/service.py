@@ -4,11 +4,21 @@ from collections import OrderedDict
 from threading import Lock, RLock
 import json
 import logging
+import os
 import re
 from uuid import uuid4
 
 from backend.app.chains.prompts import NO_ANSWER, build_chains
-from backend.app.chains.errors import ModelUnavailableError
+from backend.app.chains.errors import (
+    ModelUnavailableError,
+    RemoteInferenceError,
+    RemoteResponseError,
+)
+from backend.app.chains.remote_llm import (
+    RemoteInferenceClient,
+    RemoteQAChain,
+    RemoteTransformersLLM,
+)
 from backend.app.config import Settings, settings
 from backend.app.embeddings.vector_store import FaissVectorStore
 from backend.app.models import (
@@ -38,12 +48,14 @@ class MeetingService:
         self._runtime_lock = Lock()
         self._analysis_lock = Lock()
         self._registry_lock = RLock()
-        self._llm = None
+        self._remote_client = RemoteInferenceClient(config)
         self._embeddings = None
         self._chains = None
+        self._gpu_available = False
+        self._model_name = config.remote_model_name
         self._model_state: tuple[ModelStatus, str] = (
             "unavailable",
-            "The model has not been loaded yet. It will load when you analyze a meeting.",
+            "Start the Colab inference notebook and configure LLM_BASE_URL.",
         )
         self._meetings: OrderedDict[str, tuple[MeetingRecord, FaissVectorStore | None]] = OrderedDict()
 
@@ -55,27 +67,73 @@ class MeetingService:
     def model_state(self) -> tuple[ModelStatus, str]:
         return self._model_state
 
-    def _ensure_runtime(self) -> None:
-        if self.model_ready:
-            return
-        with self._runtime_lock:
-            if self.model_ready:
-                return
-            from backend.app.chains.local_llm import load_local_model
+    @property
+    def gpu_available(self) -> bool:
+        return self._gpu_available
 
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def refresh_remote_status(self) -> tuple[ModelStatus, str]:
+        if self.config.llm_backend != "remote":
             self._model_state = (
-                "loading",
-                "Loading Mistral Nemo and the meeting analysis components.",
+                "unavailable",
+                "Unsupported LLM_BACKEND. Configure LLM_BACKEND=remote.",
             )
+            self._gpu_available = False
+            return self._model_state
+        try:
+            remote = self._remote_client.health()
+        except RemoteInferenceError as error:
+            self._model_state = ("unavailable", str(error))
+            self._gpu_available = False
+            return self._model_state
+        except RemoteResponseError:
+            LOGGER.warning("Colab health endpoint returned an invalid response")
+            self._model_state = (
+                "unavailable",
+                "The Colab AI service returned an invalid health response.",
+            )
+            self._gpu_available = False
+            return self._model_state
+
+        self._model_state = (
+            remote["model_status"],
+            remote["detail"] or _default_remote_detail(remote["model_status"]),
+        )
+        self._gpu_available = remote["gpu_available"]
+        self._model_name = remote["model_name"]
+        return self._model_state
+
+    def _ensure_runtime(self) -> None:
+        status, detail = self.refresh_remote_status()
+        if status != "ready":
+            raise ModelUnavailableError(
+                detail or "The Colab AI service is not ready. Check its status and try again."
+            )
+        with self._runtime_lock:
+            if self._chains is not None and self._embeddings is not None:
+                return
             try:
-                llm, embeddings = load_local_model(self.config)
-                chains = build_chains(llm)
+                from sentence_transformers import SentenceTransformer
+
+                embeddings = SentenceTransformer(
+                    self.config.embedding_model,
+                    device="cpu",
+                )
+                llm = RemoteTransformersLLM(
+                    client=self._remote_client,
+                    model_name=self._model_name,
+                )
+                chains = build_chains(
+                    llm,
+                    qa_chain=RemoteQAChain(self._remote_client),
+                )
             except Exception as error:
-                LOGGER.exception("Local AI model initialization failed")
-                self._model_state = ("unavailable", _model_failure_detail(error))
+                LOGGER.exception("MeetingMind local retrieval runtime initialization failed")
                 raise
-            self._llm, self._embeddings, self._chains = llm, embeddings, chains
-            self._model_state = ("ready", "Mistral Nemo and its required components are loaded.")
+            self._embeddings, self._chains = embeddings, chains
 
     def analyze(self, text: str, source_name: str) -> MeetingAnalysisResponse:
         transcript = normalize_transcript(text)
@@ -93,11 +151,50 @@ class MeetingService:
             extracted = []
             for chunk in chunks:
                 raw = self._chains["extract"].invoke({"chunk": chunk.text})["text"]
-                values = normalize_extraction(
-                    safe_parse(raw, self._chains["parser"]),
-                    chunk.chunk_id,
-                    _source_excerpt(chunk.text),
-                )
+                parsed = None
+                try:
+                    parsed = safe_parse(raw, self._chains["parser"])
+                    values = normalize_extraction(
+                        parsed,
+                        chunk.chunk_id,
+                        _source_excerpt(chunk.text),
+                    )
+                except ModelOutputError:
+                    if os.getenv("MEETINGMIND_DIAGNOSTIC_MODEL_OUTPUT") == "1":
+                        safe_raw = raw[:1200]
+                        safe_raw = re.sub(
+                            r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+",
+                            r"\1[REDACTED]",
+                            safe_raw,
+                        )
+                        safe_raw = re.sub(
+                            r"(?i)(LLM_API_KEY\s*[:=]\s*)\S+",
+                            r"\1[REDACTED]",
+                            safe_raw,
+                        )
+                        structure = (
+                            {
+                                key: {
+                                    "type": type(value).__name__,
+                                    "length": len(value) if isinstance(value, list) else None,
+                                    "first_item_type": (
+                                        type(value[0]).__name__
+                                        if isinstance(value, list) and value
+                                        else None
+                                    ),
+                                }
+                                for key, value in parsed.items()
+                            }
+                            if isinstance(parsed, dict)
+                            else None
+                        )
+                        # This opt-in diagnostic may contain transcript-derived text; keep it disabled in production.
+                        LOGGER.warning(
+                            "Temporary model-output diagnostic: raw response excerpt=%r parsed_structure=%s",
+                            safe_raw,
+                            structure,
+                        )
+                    raise
                 extracted.append(values)
 
             decisions = deduplicate_records(
@@ -153,7 +250,21 @@ class MeetingService:
             chunks=source_chunks,
             analysis=response,
         )
-        self._register(record, None)
+        from backend.app.preprocessing.chunking import TranscriptChunk
+
+        vector_store = FaissVectorStore(
+            self._embeddings,
+            [
+                TranscriptChunk(
+                    chunk_id=chunk.chunk_id,
+                    text=chunk.text,
+                    start_word=chunk.start_word,
+                    end_word=chunk.end_word,
+                )
+                for chunk in chunks
+            ],
+        )
+        self._register(record, vector_store)
         return response
 
     def register_sample(
@@ -208,6 +319,8 @@ class MeetingService:
                 self.config.rag_top_k,
                 self.config.min_retrieval_score,
             )
+        except (ModelUnavailableError, RemoteResponseError):
+            raise
         except Exception as error:
             LOGGER.exception("Meeting Q&A failed")
             raise RuntimeError("The meeting question could not be answered. Please try again.") from error
@@ -226,23 +339,16 @@ class MeetingService:
 
 
 def _source_excerpt(text: str, limit: int = 320) -> str:
-    excerpt = re.sub(r"\s+", " ", text).strip()
+    excerpt = " ".join(text.split()).strip()
     return excerpt if len(excerpt) <= limit else excerpt[:limit].rstrip() + "…"
 
 
-def _model_failure_detail(error: Exception) -> str:
-    cause: BaseException | None = error
-    while cause is not None:
-        message = str(cause).casefold()
-        if any(
-            phrase in message
-            for phrase in ("cuda out of memory", "out of memory", "not enough memory", "insufficient memory")
-        ):
-            return "GPU memory requirement not met. Use an NVIDIA T4 with 16 GB VRAM or equivalent."
-        if "cuda gpu" in message or "cuda-enabled gpu" in message:
-            return "A CUDA-enabled GPU is required for local Mistral Nemo inference."
-        cause = cause.__cause__
-    return "The local AI model could not be loaded. Check the API logs for details."
+def _default_remote_detail(status: ModelStatus) -> str:
+    return {
+        "ready": "The Colab inference model is ready.",
+        "loading": "The Colab inference model is loading.",
+        "unavailable": "The Colab inference model is unavailable.",
+    }[status]
 
 
 def _deduplicate_strings(values: list[str]) -> list[str]:

@@ -6,10 +6,13 @@ import os
 
 @dataclass(frozen=True)
 class Settings:
-    model_name: str = "mistralai/Mistral-Nemo-Instruct-2407"
+    llm_backend: str = "remote"
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_request_timeout: int = 300
+    llm_health_timeout: int = 5
+    remote_model_name: str = "Hugging Face model on Colab"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    model_max_new_tokens: int = 900
-    max_input_tokens: int = 8192
     max_chunks: int = 20
     chunk_words: int = 600
     chunk_overlap: int = 90
@@ -26,10 +29,13 @@ class Settings:
             "http://localhost:3000,http://127.0.0.1:3000",
         )
         return cls(
-            model_name=os.getenv("MODEL_NAME", cls.model_name),
+            llm_backend=os.getenv("LLM_BACKEND", cls.llm_backend),
+            llm_base_url=os.getenv("LLM_BASE_URL", cls.llm_base_url).strip().rstrip("/"),
+            llm_api_key=os.getenv("LLM_API_KEY", cls.llm_api_key),
+            llm_request_timeout=int(os.getenv("LLM_REQUEST_TIMEOUT", cls.llm_request_timeout)),
+            llm_health_timeout=int(os.getenv("LLM_HEALTH_TIMEOUT", cls.llm_health_timeout)),
+            remote_model_name=os.getenv("REMOTE_MODEL_NAME", cls.remote_model_name),
             embedding_model=os.getenv("EMBEDDING_MODEL", cls.embedding_model),
-            model_max_new_tokens=int(os.getenv("MODEL_MAX_NEW_TOKENS", cls.model_max_new_tokens)),
-            max_input_tokens=int(os.getenv("MAX_INPUT_TOKENS", cls.max_input_tokens)),
             max_chunks=int(os.getenv("MAX_CHUNKS", cls.max_chunks)),
             chunk_words=int(os.getenv("CHUNK_WORDS", cls.chunk_words)),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", cls.chunk_overlap)),

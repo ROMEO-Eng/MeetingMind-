@@ -11,8 +11,7 @@ services:
     environment:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://meetingmind.local:3000}
     ports:
-      - "8000:8000"
-    gpus: all
+      - "${API_HOST_PORT:-8000}:8000"
     volumes:
       - model-cache:/home/meetingmind/.cache/huggingface
     restart: unless-stopped
@@ -26,28 +25,9 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
     restart: unless-stopped
-
-  notebook:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - path: .env
-        required: false
-    command:
-      - sh
-      - -c
-      - 'jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --ServerApp.token="$${JUPYTER_TOKEN:?Set JUPYTER_TOKEN in .env}" --ServerApp.root_dir=/workspace'
-    ports:
-      - "8888:8888"
-    gpus: all
-    volumes:
-      - ./notebooks:/workspace/notebooks
-      - model-cache:/home/meetingmind/.cache/huggingface
-    profiles: ["notebook"]
 
 volumes:
   model-cache:
-    name: finalproject_model-cache
+    name: meetingmind_model-cache

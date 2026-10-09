@@ -2,4 +2,12 @@
 
 
 class ModelUnavailableError(RuntimeError):
-    """Raised when the local model cannot run in the current environment."""
+    """Raised when the configured remote inference model cannot run."""
+
+
+class RemoteInferenceError(ModelUnavailableError):
+    """Raised when the configured remote inference service cannot be used."""
+
+
+class RemoteResponseError(RuntimeError):
+    """Raised when the remote service returns an invalid response contract."""

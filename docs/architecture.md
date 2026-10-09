@@ -1,6 +1,6 @@
 # Architecture
 
-MeetingMind has three deliberately separate experiences: a self-contained educational notebook, a reusable Python API, and a Next.js product frontend. Gradio remains in the notebook as the curriculum UI. The browser app contains presentation and API-client code only; it never loads a model or embeds transcript text.
+MeetingMind separates the Next.js product UI, local FastAPI processing backend, and temporary Colab GPU inference service. The browser communicates only with FastAPI. Transcript normalization, chunking, CPU embeddings, FAISS retrieval, parsing, and source attribution remain local; only language-model inference leaves the local backend.
 
 ```mermaid
 flowchart LR
@@ -15,23 +15,24 @@ flowchart LR
     E --> V[FAISS index]
     Q[Next.js Q&A] --> R[Question embedding + top-k]
     V --> R
-    R --> G[Grounded local Mistral answer]
+    R --> G[Grounded QA via Colab]
     G --> Q
-    B[Gradio notebook] --> D[Self-contained educational pipeline]
+    F[FastAPI] --> H[Authenticated remote inference client]
+    H --> I[Colab GPU model]
 ```
 
 ## Responsibilities
 
 - `backend/app/loaders/`: YouTube captions and PDF/text/subtitle reading; consistent user-facing validation.
 - `backend/app/preprocessing/`: overlapping chunks with stable source IDs and bounded work.
-- `backend/app/chains/`: 4-bit Transformers wrapper, LangChain chains, and explicit extraction/grounding prompts.
+- `backend/app/chains/`: remote Colab client/adapter, LangChain chains, and explicit extraction/grounding prompts.
 - `backend/app/parsers/`: structured output parsing, null normalization, priority validation, and duplicate aggregation.
 - `backend/app/embeddings/`: normalized MiniLM vectors and in-memory FAISS indexes.
-- `backend/app/rag/`: top-k retrieval, confidence threshold, local answer generation, and evidence references.
-- `backend/app/pipeline/`: lazy model lifecycle and bounded in-memory meeting registry.
+- `backend/app/rag/`: top-k local retrieval, confidence threshold, remote grounded answer generation, and evidence references.
+- `backend/app/pipeline/`: lazy local embedding initialization, remote model status, and bounded in-memory meeting registry.
 - `backend/app/api/`: typed HTTP contract, CORS, health, analysis, sample, QA, and downloads.
 - `frontend/`: responsive Next.js dashboard that communicates only with the HTTP API.
-- `notebooks/`: full standalone curriculum notebook, including Gradio.
+- `notebooks/MeetingMind_Colab_Inference.ipynb`: inference-only GPU service and temporary authenticated tunnel.
 
 ## API boundary
 
@@ -39,4 +40,4 @@ All routes are prefixed with `/api`. Analysis uses multipart form data so upload
 
 ## State and privacy
 
-The API keeps a bounded number of meetings and FAISS indexes in process memory only. It does not persist transcripts, use a hosted inference service, or provide authentication. Uploaded meeting content is sensitive: use only in a trusted environment and do not expose the demo API publicly without access control.
+The API keeps a bounded number of meetings and FAISS indexes in process memory only. It sends prompts and retrieved transcript excerpts to the configured Colab service. The temporary tunnel uses a bearer key but is development infrastructure, not a production security boundary. Uploaded meeting content is sensitive; do not send confidential data through a public tunnel.

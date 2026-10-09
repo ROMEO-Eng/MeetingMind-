@@ -14,6 +14,11 @@ out
 dist
 coverage
 data/*
+.gitignore
+docs
+frontend
+notebooks
+backend/tests
 *.faiss
 *.index
 *.safetensors

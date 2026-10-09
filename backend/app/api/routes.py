@@ -4,13 +4,12 @@ import csv
 from io import StringIO
 import logging
 from pathlib import Path
-import subprocess
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from backend.app.chains.errors import ModelUnavailableError
+from backend.app.chains.errors import ModelUnavailableError, RemoteResponseError
 from backend.app.config import settings
 from backend.app.loaders.transcripts import (
     TranscriptInputError,
@@ -37,40 +36,18 @@ def _service() -> MeetingService:
     return service
 
 
-def _nvidia_gpu_detected() -> bool:
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return any(line.strip() for line in result.stdout.splitlines())
-
-
-def _gpu_available() -> bool:
-    try:
-        import torch
-    except ImportError:
-        return _nvidia_gpu_detected()
-    return torch.cuda.is_available() or _nvidia_gpu_detected()
-
-
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    gpu_available = _gpu_available()
-    model_status, model_status_detail = _service().model_state
+    meeting_service = _service()
+    model_status, model_status_detail = meeting_service.refresh_remote_status()
     return HealthResponse(
-        status="ok" if gpu_available else "degraded",
+        status="ok" if model_status == "ready" else "degraded",
         api_status="connected",
         model_status=model_status,
         model_status_detail=model_status_detail,
         model_ready=model_status == "ready",
-        gpu_available=gpu_available,
-        model_name=settings.model_name,
+        gpu_available=meeting_service.gpu_available,
+        model_name=meeting_service.model_name,
     )
 
 
@@ -121,6 +98,12 @@ async def analyse(
             status_code=502,
             detail="The AI could not structure the meeting notes. Please retry the analysis.",
         ) from error
+    except RemoteResponseError as error:
+        LOGGER.warning("Colab analysis response was invalid: %s", error)
+        raise HTTPException(
+            status_code=502,
+            detail="The Colab AI service returned an invalid analysis response. Please retry.",
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as error:
@@ -137,7 +120,11 @@ async def analyse(
 @router.post(
     "/qa",
     response_model=QuestionResponse,
-    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+    responses={
+        404: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
 )
 async def qa(request: QuestionRequest) -> QuestionResponse:
     if not request.question.strip():
@@ -152,6 +139,12 @@ async def qa(request: QuestionRequest) -> QuestionResponse:
         raise HTTPException(status_code=404, detail=str(error).strip("'")) from error
     except ModelUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    except RemoteResponseError as error:
+        LOGGER.warning("Colab Q&A response was invalid: %s", error)
+        raise HTTPException(
+            status_code=502,
+            detail="The Colab AI service returned an invalid answer. Please retry.",
+        ) from error
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     except Exception as error:

@@ -250,14 +250,14 @@ export default function Workspace() {
               <div className="input-content">
                 <label htmlFor="youtube-url">Video link</label>
                 <input id="youtube-url" type="url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" required />
-                <p className="field-hint">Captions in English or Arabic are supported.</p>
+                <p className="field-hint">English captions are supported.</p>
               </div>
             )}
             {inputTab === "text" && (
               <div className="input-content">
                 <label htmlFor="transcript">Meeting transcript</label>
                 <textarea id="transcript" value={transcript} onChange={(event) => setTranscript(event.target.value)} placeholder="Paste notes or a transcript with speaker names…" rows={10} required />
-                <p className="field-hint">{transcript.trim() ? `${transcript.trim().split(/\s+/).length.toLocaleString()} words` : "English and Arabic transcripts supported."}</p>
+                <p className="field-hint">{transcript.trim() ? `${transcript.trim().split(/\s+/).length.toLocaleString()} words` : "English transcripts are supported."}</p>
               </div>
             )}
             {inputTab === "upload" && (

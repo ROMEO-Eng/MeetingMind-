@@ -41,11 +41,11 @@ def fetch_youtube_transcript(url: str) -> str:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        transcript = YouTubeTranscriptApi().fetch(video_id, languages=["ar", "en"])
+        transcript = YouTubeTranscriptApi().fetch(video_id, languages=["en"])
         text = "\n".join(segment.text for segment in transcript)
     except Exception as error:
         raise TranscriptInputError(
-            "Captions could not be retrieved. Check that the video is public and has Arabic or English captions."
+            "Captions could not be retrieved. Check that the video is public and has English captions."
         ) from error
     return normalize_transcript(text)
 

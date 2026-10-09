@@ -1,94 +1,78 @@
 from fastapi.testclient import TestClient
 
-from backend.app.chains.errors import ModelUnavailableError
 from backend.app.api.main import app
+from backend.app.config import Settings
+from backend.app.chains.errors import RemoteResponseError
 from backend.app.pipeline.service import MeetingService, service
 
 client = TestClient(app)
 
 
-def test_health_is_available_without_loading_model() -> None:
+def test_health_reports_remote_unavailable_without_loading_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service,
+        "refresh_remote_status",
+        lambda: ("unavailable", "The Colab inference model is unavailable."),
+    )
     response = client.get("/api/health")
 
     assert response.status_code == 200
     assert response.json()["model_ready"] is False
-    assert response.json()["status"] in {"ok", "degraded"}
+    assert response.json()["status"] == "degraded"
     assert response.json()["api_status"] == "connected"
     assert response.json()["model_status"] == "unavailable"
-    assert "not been loaded yet" in response.json()["model_status_detail"]
+    assert response.json()["model_status_detail"] == "The Colab inference model is unavailable."
 
 
-def test_health_reports_detected_gpu_separately_from_model_readiness(monkeypatch) -> None:
+def test_health_with_unconfigured_colab_stays_reachable_and_never_claims_ready(monkeypatch) -> None:
     from backend.app.api import routes
 
-    monkeypatch.setattr(routes, "_gpu_available", lambda: True)
+    meeting_service = MeetingService(Settings(llm_base_url=""))
+    monkeypatch.setattr(routes, "_service", lambda: meeting_service)
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["api_status"] == "connected"
+    assert response.json()["model_status"] == "unavailable"
+    assert response.json()["model_ready"] is False
+
+
+def test_health_only_reports_ready_when_remote_model_confirms_ready(monkeypatch) -> None:
+    monkeypatch.setattr(service, "_gpu_available", True)
+    monkeypatch.setattr(
+        service,
+        "refresh_remote_status",
+        lambda: setattr(service, "_model_state", ("ready", "Remote model ready."))
+        or service.model_state,
+    )
 
     response = client.get("/api/health")
 
     assert response.status_code == 200
     assert response.json()["gpu_available"] is True
-    assert response.json()["model_status"] == "unavailable"
-    assert response.json()["model_ready"] is False
+    assert response.json()["model_status"] == "ready"
+    assert response.json()["model_ready"] is True
 
 
-def test_nvidia_gpu_detection_uses_driver_query(monkeypatch) -> None:
+def test_analysis_reports_unconfigured_remote_without_loading_local_model(monkeypatch) -> None:
     from backend.app.api import routes
 
     monkeypatch.setattr(
-        routes.subprocess,
-        "run",
-        lambda *_args, **_kwargs: type("Result", (), {"stdout": "NVIDIA RTX 3050 Ti\n"})(),
+        routes,
+        "_service",
+        lambda: MeetingService(Settings(llm_base_url="")),
+    )
+    response = client.post(
+        "/api/analyse",
+        data={
+            "source_type": "text",
+            "transcript": "The team reviewed the release plan and assigned owners for follow-up work.",
+        },
     )
 
-    assert routes._nvidia_gpu_detected() is True
-
-
-def test_model_state_tracks_loader_lifecycle(monkeypatch) -> None:
-    from backend.app.chains import local_llm
-    from backend.app.pipeline import service as service_module
-
-    meeting_service = MeetingService()
-    observed_statuses = []
-
-    def load_model(_settings):
-        observed_statuses.append(meeting_service.model_state[0])
-        return object(), object()
-
-    monkeypatch.setattr(local_llm, "load_local_model", load_model)
-    monkeypatch.setattr(service_module, "build_chains", lambda _llm: {"extract": object()})
-
-    meeting_service._ensure_runtime()
-
-    assert observed_statuses == ["loading"]
-    assert meeting_service.model_state[0] == "ready"
-    assert meeting_service.model_ready is True
-
-
-def test_model_load_failure_reports_safe_vram_status(monkeypatch) -> None:
-    from backend.app.chains import local_llm
-
-    meeting_service = MeetingService()
-
-    def fail_to_load(_settings):
-        try:
-            raise RuntimeError("CUDA out of memory while allocating model weights")
-        except RuntimeError as cause:
-            raise ModelUnavailableError("Local model load failed.") from cause
-
-    monkeypatch.setattr(local_llm, "load_local_model", fail_to_load)
-
-    try:
-        meeting_service._ensure_runtime()
-    except ModelUnavailableError:
-        pass
-    else:
-        raise AssertionError("Expected the model loader failure to propagate.")
-
-    status, detail = meeting_service.model_state
-    assert status == "unavailable"
-    assert "GPU memory requirement not met" in detail
-    assert "CUDA out of memory" not in detail
-    assert meeting_service.model_ready is False
+    assert response.status_code == 503
+    assert "Colab AI service is not configured" in response.json()["detail"]
 
 
 def test_sample_is_typed_and_preserves_missing_metadata() -> None:
@@ -112,6 +96,25 @@ def test_unknown_meeting_qa_returns_safe_not_found() -> None:
 
     assert response.status_code == 404
     assert "session has expired" in response.json()["detail"]
+
+
+def test_qa_invalid_remote_response_returns_safe_bad_gateway(monkeypatch) -> None:
+    from backend.app.api import routes
+
+    class InvalidRemoteService:
+        def answer(self, _meeting_id: str, _question: str):
+            raise RemoteResponseError("invalid remote response")
+
+    monkeypatch.setattr(routes, "_service", lambda: InvalidRemoteService())
+    response = client.post(
+        "/api/qa",
+        json={"meeting_id": "meeting-1", "question": "What was decided?"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "The Colab AI service returned an invalid answer. Please retry."
+    )
 
 
 def test_empty_text_input_is_rejected_before_model_loading() -> None:

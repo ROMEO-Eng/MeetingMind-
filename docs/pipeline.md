@@ -1,15 +1,15 @@
 # AI pipeline
 
-1. **Input** — choose YouTube (Arabic/English captions), pasted transcript, or PDF/TXT/VTT/SRT.
+1. **Input** — choose YouTube (English captions), pasted English transcript, or PDF/TXT/VTT/SRT.
 2. **Clean** — validate the source, decode text, remove subtitle timing/markup, normalize whitespace, and reject empty or unreadable inputs.
 3. **Chunk** — split into bounded overlapping word windows. Each window gets a stable `chunk-NNN` ID; long inputs are explicitly reported as truncated.
 4. **Embed** — encode every source chunk and each user question with `sentence-transformers/all-MiniLM-L6-v2`; normalize vectors.
-5. **Index** — create a per-meeting in-memory FAISS `IndexFlatIP` index over normalized embeddings.
-6. **Extract** — run a LangChain `LLMChain`/`PromptTemplate` with the local 4-bit Mistral Nemo model once per transcript chunk. Prompts require explicit evidence and `null` for unstated task metadata.
+5. **Index** — create a per-meeting in-memory FAISS `IndexFlatIP` index over normalized embeddings immediately after analysis.
+6. **Extract** — run a LangChain `LLMChain`/`PromptTemplate` once per transcript chunk. The remote adapter sends the completed prompt to the authenticated Colab `/analyse` endpoint; English prompts require explicit evidence and `null` for unstated task metadata.
 7. **Parse** — parse with `StructuredOutputParser`/`ResponseSchema`; a JSON-only fallback handles absent code fences. Validate task priority and normalize empty owner/deadline values to null.
 8. **Merge** — deduplicate decisions, tasks, key points, and open questions while retaining source IDs and excerpts; then generate a final title and executive summary from the extracted facts.
 9. **Retrieve** — embed the question, search FAISS, and select at most the configured top-k source chunks. A configurable similarity threshold rejects weak matches.
-10. **Answer** — pass retrieved excerpts and the question to a local, grounded QA chain. The prompt treats transcript instructions as untrusted data and requires the exact no-answer response when evidence is missing. Successful answers include the retrieved chunk IDs and excerpts.
+10. **Answer** — pass only retrieved excerpts and the question to the authenticated Colab `/qa` endpoint. The prompt treats transcript instructions as untrusted data and requires the exact no-answer response when evidence is missing. Successful answers include the retrieved chunk IDs and excerpts.
 
 ## Guarantees and limitations
 

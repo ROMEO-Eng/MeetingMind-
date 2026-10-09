@@ -52,7 +52,7 @@ export default function RuntimeStatus() {
         ? "AI Loading"
         : "AI Unavailable";
   const detail = !checked
-    ? "Checking the backend and local model status."
+    ? "Checking the local API and Colab model status."
     : !apiConnected
       ? "The MeetingMind API is not reachable. Check that the backend is running."
       : health.model_status_detail;
@@ -65,7 +65,7 @@ export default function RuntimeStatus() {
       </span>
       <span
         className={`runtime-gpu ${!checked ? "is-checking" : !apiConnected ? "is-unknown" : health.gpu_available ? "is-detected" : "is-unavailable"}`}
-        title={apiConnected ? (health.gpu_available ? "GPU hardware detected by the backend." : "No GPU hardware detected by the backend.") : "GPU status is unknown while the backend is unreachable."}
+        title={apiConnected ? (health.gpu_available ? "GPU hardware detected by the remote Colab runtime." : "No GPU hardware detected by the remote Colab runtime.") : "GPU status is unknown while the backend is unreachable."}
       >
         <span className="runtime-dot" />
         {gpuLabel}
